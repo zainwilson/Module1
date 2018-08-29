@@ -1,0 +1,165 @@
+import pandas as pd
+#import pathlib
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import scipy.stats as st
+from IPython import get_ipython
+#from scipy.stats import norm
+#from sklearn import tree
+#from sklearn.model_selection import train_test_split
+#from sklearn.linear_model import LogisticRegression
+#from sklearn.model_selection import GridSearchCV
+#from sklearn.preprocessing import StandardScaler
+#from sklearn.model_selection import KFold
+#from IPython.display import HTML, display
+#from sklearn.manifold import TSNE
+#from sklearn.cluster import KMeans
+#from sklearn.decomposition import PCA
+from scipy import stats
+#from pathlib import Path
+import warnings
+warnings.filterwarnings('ignore')
+
+
+# Figures inline and set visualization style
+ipy = get_ipython()
+if ipy is not None:
+    ipy.run_line_magic('matplotlib', 'inline')
+
+df_train = pd.read_csv('train.csv')
+
+#Classify data into qualitative and quantitative
+quantitative = [f for f in df_train.columns if df_train.dtypes[f] != 'object']
+qualitative = [f for f in df_train.columns if df_train.dtypes[f] == 'object']
+
+#remove ID 
+quantitative.remove('Id')
+
+#Plot missing data percentage
+plt.figure(1)
+percent_missing = (df_train.isnull().sum()/df_train.isnull().count())
+percent_missing = percent_missing[percent_missing > 0]
+percent_missing.sort_values(inplace=True)
+percent_missing.plot.bar()
+
+#Count duplicates
+idsUnique = len(set(df_train.Id))
+idsTotal = df_train.shape[0]
+idsDupli = idsTotal - idsUnique
+print("There are " + str(idsDupli) + " duplicate IDs for " + str(idsTotal) + " total entries")
+
+#Descriptive analysis & normality test - Y
+y = df_train['SalePrice']
+
+print('Y descriptive stats \n\n',df_train['SalePrice'].describe())
+
+print("\n Skewness: %f" % df_train['SalePrice'].skew())
+print("\n Kurtosis: %f" % df_train['SalePrice'].kurt())
+
+test_normality = lambda x: stats.shapiro(x.fillna(0))[1] < 0.01
+normal = pd.DataFrame(df_train[quantitative])
+normal = normal.apply(test_normality)
+print('\n Shapiro-Wilks test for nomality returns',not normal.any(),'for Y variable')
+        
+#Histograms - quantitative distribution & scatter rel. y
+f = pd.melt(df_train, value_vars=quantitative)
+g = sns.FacetGrid(f, col="variable",  col_wrap=2, sharex=False, sharey=False)
+g = g.map(sns.distplot, "value")
+
+#def regplot(x,y,**kwargs):
+ #   sns.regplot(x=x,y=y)     
+  #  x=plt.xticks(rotation=90)
+#f = pd.melt(df_train,id_vars=['SalePrice'],value_vars=quantitative)
+#g = sns.FacetGrid(f, col="variable",  col_wrap=2, sharex=False, sharey=False, size=5)
+#g = g.map(sns.regplot, "value","SalePrice")
+
+#Box-plots - qualitative rel. y
+def boxplot(x, y, **kwargs):
+    sns.boxplot(x=x, y=y)
+    x=plt.xticks(rotation=90)
+f = pd.melt(df_train, id_vars=['SalePrice'], value_vars=qualitative)
+g = sns.FacetGrid(f, col="variable",  col_wrap=2, sharex=False, sharey=False, size=5)
+g = g.map(boxplot, "value", "SalePrice")
+
+#Transform variables & handle outliers (join, simplify, ordinal vs categorical, numerical->catergory, handle outliers)
+             
+#Encoding - qualitative
+def encode(frame, feature):
+    ordering = pd.DataFrame()
+    ordering['val'] = frame[feature].unique()
+    ordering.index = ordering.val
+    ordering['spmean'] = frame[[feature, 'SalePrice']].groupby(feature).mean()['SalePrice']
+    ordering = ordering.sort_values('spmean')
+    ordering['ordering'] = range(1, ordering.shape[0]+1)
+    ordering = ordering['ordering'].to_dict()
+    
+    for cat, o in ordering.items():
+        frame.loc[frame[feature] == cat, feature+'_E'] = o
+    
+qual_encoded = []
+for q in qualitative:  
+    encode(df_train, q)
+    qual_encoded.append(q+'_E')
+print("\n Encoded qualitative data",qual_encoded)
+
+#Test Pearson pval
+def anova(frame):
+    anv = pd.DataFrame()
+    anv['feature'] = df_train
+    pvals = []
+    for c in df_train:
+        samples = []
+        for cls in frame[c].unique():
+            s = frame[frame[c] == cls]['SalePrice'].values
+            samples.append(s)
+        pval = stats.f_oneway(*samples)[1]
+        pvals.append(pval)
+    anv['pval'] = pvals
+    return anv.sort_values('pval')
+
+a = anova(df_train)
+a['disparity'] = np.log(1./a['pval'].values)
+sns.barplot(data=a, x='feature', y='disparity')
+x=plt.xticks(rotation=90)
+
+#Spearman correlation
+def spearman(frame, features):
+    spr = pd.DataFrame()
+    spr['feature'] = features
+    spr['spearman'] = [frame[f].corr(frame['SalePrice'], 'spearman') for f in features]
+    spr = spr.sort_values('spearman')
+    plt.figure(figsize=(6, 0.25*len(features)))
+    sns.barplot(data=spr, y='feature', x='spearman', orient='h')
+    
+features = quantitative + qual_encoded
+spearman(df_train, features)
+
+#Testing for multicollinearity 
+
+#Correlation heatmap
+plt.figure(4)
+corr = df_train[quantitative+['SalePrice']].corr()
+sns.heatmap(corr)
+plt.figure(5)
+corr = df_train[qual_encoded+['SalePrice']].corr()
+sns.heatmap(corr)
+plt.figure(6)
+corr = pd.DataFrame(np.zeros([len(quantitative)+1, len(qual_encoded)+1]), index=quantitative+['SalePrice'], columns=qual_encoded+['SalePrice'])
+for q1 in quantitative+['SalePrice']:
+    for q2 in qual_encoded+['SalePrice']:
+        corr.loc[q1, q2] = df_train[q1].corr(df_train[q2])
+sns.heatmap(corr)
+
+
+#Pairplots
+def pairplot(x, y, **kwargs):
+    ax = plt.gca()
+    ts = pd.DataFrame({'time': x, 'val': y})
+    ts = ts.groupby('time').mean()
+    ts.plot(ax=ax)
+    plt.xticks(rotation=90)
+    
+f = pd.melt(df_train, id_vars=['SalePrice'], value_vars=quantitative+qual_encoded)
+g = sns.FacetGrid(f, col="variable",  col_wrap=2, sharex=False, sharey=False, size=5)
+g = g.map(pairplot, "value", "SalePrice")
